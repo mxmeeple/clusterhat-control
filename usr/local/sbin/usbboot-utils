@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+
+import os;
+from enum import Enum
+import configparser
+
+config_file = configparser.ConfigParser()
+configFilePath = r'/etc/usbboot-utils'
+config_file.read(configFilePath)
+
+config = {
+    'root_path': config_file.get("USB Boot Utils", "root_path", fallback="/var/lib/usbboot"),
+    'VirtualFS_size': config_file.get("USB Boot Utils", "VirtualFS_size", fallback="4GB"),
+    'OverlayFS_args': config_file.get("USB Boot Utils", "OverlayFS_args", fallback="rw,relatime"),
+    'NFS_args': config_file.get("USB Boot Utils", "NFS_args", fallback="rw,async,no_subtree_check,no_root_squash,insecure,crossmnt"),
+    'RPI_Boot_service_name': config_file.get("USB Boot Utils", "RPI_Boot_service_name", fallback="usbboot_helper"),
+    'Controller_IP': config_file.get("USB Boot Utils", 'Controller_IP', fallback='192.168.0.1')
+}
+
+def write_config(file="/etc/usbboot-utils"):
+    with open(file, 'w') as configfile:
+        config.write(configfile)
+
+
+    
+# returns name,path tuple
+# checks if it is a node directory first, then if it is a real path, then as a fallback uses the node directory
+@staticmethod
+def get_full_path_from_node_name(name_or_path:str):
+    name=os.path.basename(name_or_path);
+    tmp=os.path.join(config["root_path"], "nodes", name)
+    path=""
+    if os.path.isdir(tmp):
+        path=tmp
+    elif os.path.isdir(name_or_path):
+        path=name_or_path
+    else: 
+        path=tmp;
+    return name,os.path.realpath(path);
+    
+@staticmethod
+def create_VFS_file(vfs_full_path, size):
+    if not os.path.isdir(vfs_full_path):
+        os.system(f"dd if=/dev/zero of={vfs_full_path} bs=1 count=0 seek={size}");
+        os.system(f"mkfs.ext4 {vfs_full_path}");
+        #trace "Created VFS file of size ${SIZE} at ${FULL_PATH}"
+    #else:
+    #    trace "File exists: ${FULL_PATH}. Skipping"
+
+@staticmethod
+def unmount(path:str):
+    os.system(f"umount -q {path}")
+
+@staticmethod
+def try_mount(source_full_path:str, target_full_path:str, args="rw,usrquota,grpquota"):
+    if os.path.isfile(source_full_path) and not os.path.ismount(target_full_path):
+        os.system(f"mount -o {args} {source_full_path} {target_full_path}")
+
+@staticmethod
+def create_OFS_structure(path_to_node_root):    
+    os.makedirs(Node.structure(path_to_node_root)["ofs_root"], exist_ok=True);
+    os.makedirs(Node.structure(path_to_node_root)["ofs_root_work"], exist_ok=True);
+    os.makedirs(Node.structure(path_to_node_root)["ofs_root_upper"], exist_ok=True);
+
+    os.makedirs(Node.structure(path_to_node_root)["ofs_boot"], exist_ok=True);
+    os.makedirs(Node.structure(path_to_node_root)["ofs_boot_work"], exist_ok=True);
+    os.makedirs(Node.structure(path_to_node_root)["ofs_boot_upper"], exist_ok=True);
+
+@staticmethod
+def try_mount_OFS(lower_full_path, work_full_path, upper_full_path, target_full_path):
+    name="usbboot_{DIRNAME}_{BASENAME}_overlay".format(DIRNAME=os.path.basename(os.path.dirname(target_full_path)),BASENAME=os.path.basename(target_full_path))
+    default_args=config['OverlayFS_args']
+    args=None
+    if(len(default_args) != 0 ):
+        args=default_args+","
+    args+=f"lowerdir={lower_full_path},workdir={work_full_path},upperdir={upper_full_path}";
+    if os.path.isdir(target_full_path) and not os.path.ismount(target_full_path):
+        os.system(f"mount {name} -t overlay -o {args} {target_full_path}")
+
+@staticmethod
+def try_export_NFS(IP:str, full_path:str):        
+    args=config['NFS_args']
+    ## TODO check if already mounted before trying again
+    os.system(f"exportfs -o {args} {IP}:{full_path}")
+#            trace "Exporting: ${FOLDER} to ${IP}"
+#        else
+#            trace "Already exported: ${FOLDER}" "Skipping"
+
+@staticmethod
+def unexport_NFS(IP:str, full_path:str):
+    os.system(f"exportfs -u {IP}:{full_path}")
+
+@staticmethod
+def boot():
+    status = os.system(f'systemctl is-active --quiet {config["RPI_Boot_service_name"]}')
+    if status != 0:     
+        boot_path=os.path.join(config["root_path"], ".boot")
+        os.system(f"rpiboot -d {boot_path} -o")
+ 
+
+class Bootable:
+    class Arch(Enum):
+        x32=32
+        x64=64
+
+    def __init__(self, usb_dev_path:str, arch: Arch):
+        self.usb_dev_path=usb_dev_path
+        self.arch = arch
+
+    def bind_boot(self, node_boot_path:str):
+        boot_path=os.path.join(config["root_path"], ".boot")
+        if not os.path.isdir(boot_path) and os.path.isfile(os.path.join(boot_path, "bootcode.bin")):
+            raise Exception(f"Bootcode not found. create a folder at {os.path.join(config['root_path'], '.boot')} and copy a bootcode.bin into it")
+        bootable_boot_path=os.path.join(boot_path, self.usb_dev_path)
+
+        if os.path.islink(bootable_boot_path):
+            os.unlink(bootable_boot_path)
+        os.symlink(os.path.relpath(node_boot_path, os.path.dirname(bootable_boot_path)), bootable_boot_path)
+
+    
+
+    # echo -n "0000:39:00.0" | tee /sys/bus/pci/drivers/xhci_hcd/unbind;echo -n "0000:39:00.0" | tee /sys/bus/pci/drivers/xhci_hcd/bind
+    #def reset(self):
+    #    folder = "/sys/bus/usb/drivers/usb/"
+    #    try:
+    #        with open(os.path.join(folder, 'unbind'), 'wt') as fp:
+    #            fp.write(self.usb_dev_path)
+    #        with open(os.path.join(folder, 'bind'), 'wt') as fp:
+    #            fp.write(self.usb_dev_path)
+    #        print('Successfully reset %s' % self.usb_dev_path)
+    #    except Exception as ex:
+    #        print('Failed to reset device! Error: %s' % ex)
+    
+    def unbind(self):
+        os.unlink(self.usb_dev_path)
+
+
+    # Returns USB-DEV_path representing a RPI in USBBOOT mode that are currently turned on and connected
+    @staticmethod
+    def detect_rpi_bootables():
+        bootables=[]
+        devices_result=os.popen("grep 0a5c /sys/bus/usb/devices/*/idVendor --exclude=/sys/bus/usb/devices/*:*/idVendor | grep Broadcom /sys/bus/usb/devices/*/manufacturer --exclude=/sys/bus/usb/devices/*:*/manufacturer | grep -e 2764 -e 2763 /sys/bus/usb/devices/*/idProduct --exclude=/sys/bus/usb/devices/*:*/idProduct").read().split('\n')    
+        for device in devices_result:
+            name=device[21:len(device)-15]
+            idProduct=device[len(device)-4:len(device)]
+            bootable=None
+            if idProduct == "2763":
+                bootable = Bootable(name, Bootable.Arch.x32)
+            elif idProduct == "2764":
+                bootable = Bootable(name, Bootable.Arch.x64)
+            if(bootable is not None):
+                bootables.append(bootable)
+        return bootables
+
+class Node:
+    
+    def __init__(self, name:str, path:str, IP:str, parent=None):
+        self.name=name
+        self.path = path
+        self.parent=parent
+        self.IP=IP
+        self.structure=Node.structure(self.path)
+
+        
+    @staticmethod
+    def structure(path):
+        structure={}
+        structure["root"]           =os.path.join(path, "root")
+        structure["boot"]           =os.path.join(structure["root"] , "boot")
+        structure["img"]            =os.path.join(os.path.dirname(path), os.path.basename(path)+".img")
+
+        #self.structure["arch"]         =os.path.join(self.path, ".arch")
+        structure["ip"]             =os.path.join(path, ".ip")
+        structure["parent"]         =os.path.join(path, ".parent")
+        structure["vfs_file"]       =os.path.join(path, ".vfs_root.ext4")
+
+        structure["ofs_root"]       =os.path.join(path, ".ofs_root")
+        structure["ofs_root_work"]  =os.path.join(structure["ofs_root"], "work")
+        structure["ofs_root_upper"] =os.path.join(structure["ofs_root"], "upper")
+
+        structure["ofs_boot"]       =os.path.join(path, ".ofs_boot")
+        structure["ofs_boot_work"]  =os.path.join(structure["ofs_boot"], "work")
+        structure["ofs_boot_upper"] =os.path.join(structure["ofs_boot"], "upper")
+        return structure
+       
+
+    def mount(self):
+        if os.path.isfile(self.structure["img"]) and not os.path.ismount(self.structure["root"]):
+            loop=os.popen(f'losetup -rP --show --nooverlap --find {self.structure["img"]}').read()
+            os.makedirs(self.structure["root"], exist_ok=True)
+            os.system('mount {loop} {dest}'.format(loop=loop.replace("\n", "p2"), dest=self.structure["root"]))
+        if(self.parent is not None):
+            parent_node=Node.existing(self.parent)
+            parent_node.mount()
+
+            if not os.path.isfile(self.structure["vfs_file"]):
+                create_VFS_file(self.structure["vfs_file"], config['VirtualFS_size'])
+                os.makedirs(self.structure["ofs_root"], exist_ok=True);
+            try_mount(os.path.join(self.path,".vfs_root.ext4"), self.structure["ofs_root"])
+            
+            create_OFS_structure(self.path)
+            #if os.path.islink(self.structure["parent"]):
+            #    os.unlink(self.structure["parent"])
+            #os.symlink(os.path.relpath(self.parent, os.path.dirname(self.path)), self.structure["parent"])
+            try_mount_OFS(os.path.join(self.parent, "root"), self.structure["ofs_root_work"], self.structure["ofs_root_upper"],self.structure["root"]);
+            try_mount_OFS(os.path.join(config['root_path'], "nodes", "boot"), self.structure["ofs_boot_work"], self.structure["ofs_boot_upper"], self.structure["boot"]);
+        
+        if self.IP is not None:
+            try_export_NFS(self.IP, self.structure["root"])
+
+    def unmount(self):
+        if self.IP is not None:
+            unexport_NFS(self.IP, self.structure["root"])
+        unmount(self.structure["boot"])
+        unmount(self.structure["root"])
+        unmount(self.structure["ofs_root"])
+
+    def purge(self):
+        self.unmount()
+        os.removedirs(self.path)
+
+    def try_boot(self, bootable:Bootable=None):
+        if self.IP is None: 
+            raise Exception("Failed to get IP for node by its existing file. Fix by caling .set_IP")
+        if bootable is None:
+            bootables=Bootable.detect_rpi_bootables()            
+            bootable=None if len(bootables) == 0 else bootables[0]
+        # trace "${BOOTABLE}"
+        if bootable is None:
+            raise Exception("Failed to find a bootable to boot the node to. ", self.name, self.path)
+        self.mount()
+        bootable.bind_boot(self.structure["boot"])
+        boot()
+
+    def setup(self):
+        with open(os.path.join(self.structure["root"], "etc", "fstab"), "w") as fstab:
+            fstab.write("proc            /proc           proc    defaults          0       0");
+
+        
+        controller_ip=config['Controller_IP']
+        with open(os.path.join(self.structure["root"], "boot", "cmdline.txt"), "w") as cmdline:
+            cmdline.write(f"console=serial0,115200 console=tty1 root=/dev/nfs nfsroot={controller_ip}:{self.structure['root']} rw fsck.mode=skip modules-load=dwc2,g_ether ip={self.IP}:{controller_ip}::255.255.255.0:{self.name}:usb0:static rootwait");
+        
+#        with open(os.path.join(self.structure["root"], "boot", "config.txt"), "w") as config:
+#            config.write(f"""
+#[all]
+#dtoverlay=dwc2
+#gpu_mem=16
+#disable_poe_fan=1
+#ignore_lcd=1
+#initramfs initrd.img followkernel
+#[pi02]
+#arm_64bit=1
+#[all]""") 
+
+        with open(os.path.join(self.structure["root"], "boot", "userconf.txt"), "w") as userconf:
+            userconf.write("locksmith:$6$25gleax2rip0NZDq$W07qy5yygFLQSEwTsA/mgNdhA/4mckENF4Vw1ekUPM7TAqZKdI7JuBguGlAKIbSa2GqTtf3HUNoS9zAu0hA65.");
+        os.remove(os.path.join(self.structure['root'], 'etc', 'init.d', 'resize2fs_once'))
+        os.remove(os.path.join(self.structure['root'], 'etc', 'rc3.d', 'resize2fs_once'))
+
+    def set_IP(self, IP:str):
+        Node.set_IP(self.path, IP);
+        self.IP=IP;
+    
+    @staticmethod
+    def set_IP(node_path, IP:str):
+        ip_file_path=Node.structure(node_path)["ip"]
+        with open(ip_file_path, "w") as ip_file:
+            ip_file.write(IP);
+    
+    @staticmethod
+    def set_parent(node_path, parent_node_path):
+        parent_file_path=Node.structure(node_path) ["parent"]
+        if os.path.islink(parent_file_path):
+            os.unlink(parent_file_path)
+        os.symlink(os.path.relpath(parent_node_path, node_path), parent_file_path)
+
+
+
+    @staticmethod
+    def existing(name_or_path:str):
+        node_name,node_path=get_full_path_from_node_name(name_or_path);
+
+        parent_file=Node.structure(node_path)["parent"]
+        parent=os.path.realpath(parent_file) if os.path.islink(parent_file) and os.path.exists(parent_file) else None
+
+        ip=None
+        ip_file_path=Node.structure(node_path)["ip"]
+        if os.path.isfile(ip_file_path):
+            with open(ip_file_path, "r") as ip_file:
+                ip = ip_file.readline()
+        #if ip is None:
+        return Node(node_name,node_path, ip, parent);
+
+
+    @staticmethod
+    def create(node_path_or_name:str, IP:str, parent_path_or_name:str=None):
+        node_name,node_path=get_full_path_from_node_name(node_path_or_name)
+        os.makedirs(node_path, exist_ok=True)
+        Node.set_IP(node_path, IP)
+        parent_name,parent_path=None,None;
+        if parent_path_or_name is not None:
+            parent_name,parent_path=get_full_path_from_node_name(parent_path_or_name)
+            Node.set_parent(node_path, parent_path)
+        
+        os.makedirs(os.path.join(node_path, "root", "boot"), exist_ok=True);
+        return Node(node_name, node_path, IP, parent_path)
+
+
+    """
+    @staticmethod
+    def get_all_existing_nodes():
+        folder_contents=os.listdir(os.path.join(config["root_path"], "nodes"));
+        node_list={}
+        for entry in folder_contents:
+            node_tmp = Node.existing(entry)
+            if node_tmp is not None: 
+                node_list[entry]=node_tmp
+        return node_list
+    """
+
+
+#create_node_with_parent test raspios-bullseye-armhf-lite
+#boot_node test 192.168.1.81
