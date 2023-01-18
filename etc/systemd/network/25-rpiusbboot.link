@@ -1,0 +1,7 @@
+[Match]
+Driver=cdc_ether
+Path=*-usb-*
+
+[Link]
+#NamePolicy=path
+Name=enp_usb
