@@ -125,16 +125,3 @@ else
     usage
 fi
 
-
-### Currently 
-# no ip link for nodes to controller
-# meaning nodes have kernel panic on boot
-
-#### TODO  use SD card version, modify the boot partition to be the same cmdline and config as usbboots and check if g_ether still triggers
-
-## todo 
-# init without on per node
-
-
-
-## sudo rm /usr/local/sbin/clusterhat-control ; sudo nano /usr/local/sbin/clusterhat-control && sudo chmod +x /usr/local/sbin/clusterhat-control
