@@ -61,3 +61,12 @@ Sets up the specified node fully
 ## Modules
 ### Enable IPv4 routing
 net.ipv4.ip_forward=1
+options overlay nfs_export=Y
+options overlay index=Y
+
+requires 
+- nfs-kernel-server
+- rpiboot
+- xz
+- wget
+
