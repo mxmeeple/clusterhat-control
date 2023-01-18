@@ -2,10 +2,10 @@ network:
   ethernets:
     eth0:
       dhcp4: false
-#    usb0:
-#      dhcp4: false
-#    pi0s-usb:
-#      match: {name: "enp2*"}
+    usb0:
+      dhcp4: false
+    pi0s-usb:
+      match: {name: "enp2*"}
     enp_usb:
       dhcp4: false
   bridges:
