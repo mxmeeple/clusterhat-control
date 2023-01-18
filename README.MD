@@ -58,11 +58,8 @@ Sets up the specified node fully
 4. bind node boot directory 
 
 
-## Modules
-### Enable IPv4 routing
-net.ipv4.ip_forward=1
-options overlay nfs_export=Y
-options overlay index=Y
+## Other
+`net.ipv4.ip_forward=1` in /etc/sysctl.conf
 
 requires 
 - nfs-kernel-server
