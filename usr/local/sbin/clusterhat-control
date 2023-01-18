@@ -1,0 +1,140 @@
+#!/bin/bash
+
+
+#
+# Simple helper command to control the HUB over I2C
+# Args:
+# - $1 on|off
+# - $2 hub|1|2|3|4|alert|LEDs
+#
+# i2cset -y -m $(("${1:-2#01101111}" & 2#00001111)) 1 0x20 1 $(( ${2:-0xff} && "${NODE_ON}" ))
+#HUB_ON=0x00
+#NODE_ON=0xff
+#NODE_1_MASK=2#00000001
+#NODE_2_MASK=2#00000010
+#NODE_3_MASK=2#00000100
+#NODE_4_MASK=2#00001000
+#LED_MASK=2#00010000
+#HUB_MASK=2#00100000
+#ALERT_LED_MASK=2#01000000
+#WRITE_PROTECT_MASK=2#10000000
+function i2c_interface {
+    if [[ "$1" == "on" ]]; then
+        if [[ "$2" == "hub" ]]; then
+            debug "HUB ON"
+            i2cset -y -m $((2#00100000)) 1 0x20 1 0x00 
+        elif [[ "$2" == "1" ]]; then
+            debug "Node 1 ON"
+            i2cset -y -m $((2#00001000)) 1 0x20 1 0xff 
+        elif [[ "$2" == "2" ]]; then
+            debug "Node 2 ON"
+            i2cset -y -m $((2#00000100)) 1 0x20 1 0xff
+        elif [[ "$2" == "3" ]]; then
+            debug "Node 3 ON"
+            i2cset -y -m $((2#00000010)) 1 0x20 1 0xff
+        elif [[ "$2" == "4" ]]; then
+            debug "Node 4 ON"
+            i2cset -y -m $((2#00000001)) 1 0x20 1 0xff
+        elif [[ "$2" == "LEDs" ]]; then
+            debug "LEDs ON"
+            i2cset -y -m $((2#00010000)) 1 0x20 1 0xff
+        elif [[ "$2" == "alert" ]]; then
+            debug "alert ON"
+            i2cset -y -m $((2#01000000)) 1 0x20 1 0xff
+        else
+            unexpected_param 2 "$2" "hub|1|2|3|4|alert|LEDs"
+        fi
+
+    elif [[ "$1" == "off" ]]; then
+        if [[ "$2" == "hub" ]]; then
+            debug "hub OFF"
+            i2cset -y -m $((2#00100000)) 1 0x20 1 0xff 
+        elif [[ "$2" == "1" ]]; then
+            debug "Node 1 OFF"
+            i2cset -y -m $((2#00001000)) 1 0x20 1 0x00 
+        elif [[ "$2" == "2" ]]; then
+            debug "Node 2  OFF"
+            i2cset -y -m $((2#00000100)) 1 0x20 1 0x00
+        elif [[ "$2" == "3" ]]; then
+            debug "Node 3 OFF"
+            i2cset -y -m $((2#00000010)) 1 0x20 1 0x00 
+        elif [[ "$2" == "4" ]]; then
+            debug "Node 4 OFF"
+            i2cset -y -m $((2#00000001)) 1 0x20 1 0x00
+        elif [[ "$2" == "LEDs" ]]; then
+            debug "leds OFF"
+            i2cset -y -m $((2#00010000)) 1 0x20 1 0x00
+        elif [[ "$2" == "alert" ]]; then
+            debug "alert OFF"
+            i2cset -y -m $((2#01000000)) 1 0x20 1 0x00
+        else
+            unexpected_param 2 "$2" "hub|1|2|3|4|alert|LEDs"
+        fi
+    else
+        unexpected_param 1 "$1" "on|off"
+    fi
+}
+
+
+#
+# Initializes the HUB
+#
+function init_HUB {
+    HUB_I2C_DIRECTION=$(i2cget -y 1 0x20 3)
+    if [[ $HUB_I2C_DIRECTION == 0xff ]]; then
+        #turns off Pi's to NOT start when HUB is turned on
+        i2cset -y -m $((2#000001111)) 1 0x20 1 0x00;
+        # Turn off Alert LED
+        i2c_interface off alert
+        # Turn on Status(Power) LED
+        i2c_interface on LEDs
+        # Set all pins on the I/O expander to outputs
+        i2cset -y 1 0x20 3 0x00;
+    fi
+    # Turn on HUB
+    i2c_interface on hub
+}
+
+
+function usage {
+    echo "?TODO: add usage"
+    echo "init"
+    echo "on|off [nodes|node|hub|1|2|3|4|alert|LEDs]"
+    echo "bind|unbind usb_path [node_index]"
+}
+
+if [[ "$1" = "on" || "$1" = "off" ]]; then
+    if [[ ! -v 2 || "$2" == "node" || "$2" == "nodes" ]]; then
+        i2c_interface on LEDs   
+        i2c_interface "$1" hub
+        for NODE_INDEX in 1 2 3 4 ; do
+            i2c_interface "$1" "$NODE_INDEX"
+            if [[ "$1" = "on" ]]; then
+                sleep "$ON_STAGGER";
+            fi
+        done
+    else
+        i2c_interface "$1" "$2"
+    fi
+elif [[ "$1" = "init" ]]; then
+    if [[ ! -v 2 || "$2" = "hub" ]]; then
+        init_HUB 
+    fi
+else 
+    echo "Incorrect params"
+    usage
+fi
+
+
+### Currently 
+# no ip link for nodes to controller
+# meaning nodes have kernel panic on boot
+
+#### TODO  use SD card version, modify the boot partition to be the same cmdline and config as usbboots and check if g_ether still triggers
+
+## todo 
+# init without on per node
+
+
+
+## sudo rm /usr/local/sbin/clusterhat-control ; sudo nano /usr/local/sbin/clusterhat-control && sudo chmod +x /usr/local/sbin/clusterhat-control
