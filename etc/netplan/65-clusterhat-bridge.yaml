@@ -1,0 +1,32 @@
+network:
+  ethernets:
+    eth0:
+      dhcp4: false
+#    usb0:
+#      dhcp4: false
+#    pi0s-usb:
+#      match: {name: "enp2*"}
+    enp_usb:
+      dhcp4: false
+  bridges:
+    br0:
+      interfaces: [ eth0, usb0, pi0s-usb, enp_usb ]
+      parameters:
+        stp: true
+      addresses:
+        - 192.168.1.78/24
+        - 192.168.2.78/24
+        - 10.42.102.1/24
+      routes:
+        - to: default
+          via: 192.168.1.254
+          metric: 200
+        - to: default
+          via: 192.168.2.1
+          metric: 300
+      nameservers:
+        addresses:
+          - 1.1.1.1
+          - 192.168.1.254
+  version: 2
+  renderer: NetworkManager
