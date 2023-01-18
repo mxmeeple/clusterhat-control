@@ -57,3 +57,7 @@ Sets up the specified node fully
 3. setup the neccessary files
 4. bind node boot directory 
 
+
+## Modules
+### Enable IPv4 routing
+net.ipv4.ip_forward=1
