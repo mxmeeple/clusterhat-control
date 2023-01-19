@@ -4,13 +4,41 @@ network:
       dhcp4: false
     usb0:
       dhcp4: false
-    pi0s-usb:
-      match: {name: "enp2*"}
+    pi0_usb_a:
+      match:
+        name: enp*
+    pi0_usb_b:
+      match:
+        name: enp*
+    pi0_usb_c:
+      match:
+        name: enp*
+    pi0_usb_d:
+      match:
+        name: enp*
+    pi0_usb_e:
+      match:
+        name: enp*
+    pi0_usb_f:
+      match:
+        name: enp*
+    pi0_usb_g:
+      match:
+        name: enp*
+    pi0_usb_h:
+      match:
+        name: enp*
+    pi0_usb_i:
+      match:
+        name: enp*
+    pi0_usb_j:
+      match:
+        name: enp*
     enp_usb:
       dhcp4: false
   bridges:
     br0:
-      interfaces: [ eth0, usb0, pi0s-usb, enp_usb ]
+      interfaces: [ eth0, usb0, pi0_usb_a, pi0_usb_b, pi0_usb_c, pi0_usb_d, pi0_usb_e, pi0_usb_f, pi0_usb_g, pi0_usb_h, pi0_usb_i, pi0_usb_j, enp_usb ]
       parameters:
         stp: true
       addresses:
