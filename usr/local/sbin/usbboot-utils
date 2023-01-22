@@ -14,12 +14,19 @@ config = {
     'OverlayFS_args': config_file.get("USB Boot Utils", "OverlayFS_args", fallback="rw,relatime"),
     'NFS_args': config_file.get("USB Boot Utils", "NFS_args", fallback="rw,async,no_subtree_check,no_root_squash,insecure,crossmnt"),
     'RPI_Boot_service_name': config_file.get("USB Boot Utils", "RPI_Boot_service_name", fallback="usbboot_helper"),
-    'Controller_IP': config_file.get("USB Boot Utils", 'Controller_IP', fallback='192.168.0.1')
+    'Controller_IP': config_file.get("USB Boot Utils", 'Controller_IP', fallback='192.168.0.1'),
+    'ssh_auth_file': config_file.get("USB Boot Utils", 'ssh_auth_file', fallback=f'/home/{os.getlogin()}/.ssh/id_rsa.pub'),
+    'node_username': config_file.get("USB Boot Utils", 'node_username', fallback='pi'),
+    'node_password_hash': config_file.get("USB Boot Utils", 'node_password_hash', fallback='$6$wr4XomsVgldwM8nE$ZNrG4nEUD9t.f3oOac6A89n.ePTOaXNBjYtC7fpCwrSAHWakr9AOe/QmPjDjkXcsTjCi1l3l0BVyspid5sLcb0'),
 }
 
 def write_config(file="/etc/usbboot-utils"):
+    config_file['USB Boot Utils'] = {}
+    for entry in config:
+        config_file['USB Boot Utils'][entry]=config[entry];
+    
     with open(file, 'w') as configfile:
-        config.write(configfile)
+        config_file.write(configfile)
 
 
     
@@ -217,7 +224,12 @@ class Node:
 
     def purge(self):
         self.unmount()
-        os.removedirs(self.path)
+        import shutil
+        try:
+            shutil.rmtree(self.path)
+        except:
+            print('Error deleting directory')
+        #os.removedirs(self.path)
 
     def try_boot(self, bootable:Bootable=None):
         if self.IP is None: 
@@ -232,15 +244,37 @@ class Node:
         bootable.bind_boot(self.structure["boot"])
         boot()
 
-    def setup(self):
-        with open(os.path.join(self.structure["root"], "etc", "fstab"), "w") as fstab:
-            fstab.write("proc            /proc           proc    defaults          0       0");
 
-        
-        controller_ip=config['Controller_IP']
+    def rename(self, new_name:str):
+        self.mount()
+        os.system(f'sed -i "s/127.0.1.1 *.*/127.0.1.1\t{self.name}/g" {os.path.join(self.structure["root"], "etc", "hosts")}');
+        with open(os.path.join(self.structure["root"], "etc", "hostname"), "w") as hostname:
+            hostname.write(f"{self.name}");
+            controller_ip=config['Controller_IP']
         with open(os.path.join(self.structure["root"], "boot", "cmdline.txt"), "w") as cmdline:
             cmdline.write(f"console=serial0,115200 console=tty1 root=/dev/nfs nfsroot={controller_ip}:{self.structure['root']} rw fsck.mode=skip modules-load=dwc2,g_ether ip={self.IP}:{controller_ip}::255.255.255.0:{self.name}:usb0:static rootwait");
+        if self.name is not new_name:
+            os.rename(self.structure['root'], Node.structure(new_name)['root']);
+            self.name=new_name;
         
+    def setup(self):
+        self.mount()
+        # remove fstab entries
+        with open(os.path.join(self.structure["root"], "etc", "fstab"), "w") as fstab:
+            fstab.write("proc            /proc           proc    defaults          0       0");
+        self.rename(self.name)
+        
+        with open(os.path.join(self.structure["root"], "boot", "userconf.txt"), "w") as userconf:
+            userconf.write(f"{config['node_username']}:{config['node_password_hash']}");
+        Node.remove_first_time_boot_resize(self.structure['root'])
+
+
+        with open(config["ssh_auth_file"], "r") as ssh_key:
+            node_ssh_dir=os.path.join(self.structure["root"], "home", "pi", ".ssh");
+            os.makedirs(node_ssh_dir, exist_ok=True);            
+            
+            with open(os.path.join(node_ssh_dir, "authorized_keys"), "a") as authorized_keys:
+                authorized_keys.write(ssh_key.read());
 #        with open(os.path.join(self.structure["root"], "boot", "config.txt"), "w") as config:
 #            config.write(f"""
 #[all]
@@ -253,15 +287,20 @@ class Node:
 #arm_64bit=1
 #[all]""") 
 
-        with open(os.path.join(self.structure["root"], "boot", "userconf.txt"), "w") as userconf:
-            userconf.write("locksmith:$6$25gleax2rip0NZDq$W07qy5yygFLQSEwTsA/mgNdhA/4mckENF4Vw1ekUPM7TAqZKdI7JuBguGlAKIbSa2GqTtf3HUNoS9zAu0hA65.");
-        os.remove(os.path.join(self.structure['root'], 'etc', 'init.d', 'resize2fs_once'))
-        os.remove(os.path.join(self.structure['root'], 'etc', 'rc3.d', 'resize2fs_once'))
 
     def set_IP(self, IP:str):
         Node.set_IP(self.path, IP);
         self.IP=IP;
     
+    @staticmethod
+    def remove_first_time_boot_resize(node_root_path:str):
+        r2fs_file=os.path.join(node_root_path, 'etc', 'init.d', 'resize2fs_once')
+        if os.path.isfile(r2fs_file):
+            os.remove(r2fs_file)
+        S01r2fs_file=os.path.join(node_root_path, 'etc', 'rc3.d', 'S01resize2fs_once')
+        if os.path.isfile(S01r2fs_file):
+            os.remove(S01r2fs_file)
+
     @staticmethod
     def set_IP(node_path, IP:str):
         ip_file_path=Node.structure(node_path)["ip"]
@@ -294,15 +333,15 @@ class Node:
 
 
     @staticmethod
-    def create(node_path_or_name:str, IP:str, parent_path_or_name:str=None):
+    def create(node_path_or_name:str, IP:str=None, parent_path_or_name:str=None, VFS_size:str=None):
         node_name,node_path=get_full_path_from_node_name(node_path_or_name)
         os.makedirs(node_path, exist_ok=True)
-        Node.set_IP(node_path, IP)
+        if IP is not None:
+            Node.set_IP(node_path, IP)
         parent_name,parent_path=None,None;
         if parent_path_or_name is not None:
             parent_name,parent_path=get_full_path_from_node_name(parent_path_or_name)
-            Node.set_parent(node_path, parent_path)
-        
+            Node.set_parent(node_path, parent_path)        
         os.makedirs(os.path.join(node_path, "root", "boot"), exist_ok=True);
         return Node(node_name, node_path, IP, parent_path)
 
@@ -319,6 +358,8 @@ class Node:
         return node_list
     """
 
+#if __name__ == "__main__":
+    
 
 #create_node_with_parent test raspios-bullseye-armhf-lite
 #boot_node test 192.168.1.81
